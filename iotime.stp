@@ -1,0 +1,118 @@
+#! /usr/bin/env stap
+/*
+ * Copyright (C) 2006-2007 Red Hat Inc.
+ *
+ * This copyrighted material is made available to anyone wishing to use,
+ * modify, copy, or redistribute it subject to the terms and conditions
+ * of the GNU General Public License v.2.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Print out the amount of time spent in the read and write systemcall
+ * when each file opened by the process is closed. Note that the systemtap
+ * script needs to be running before the open operations occur for
+ * the script to record data.
+ *
+ * This script could be used to to find out which files are slow to load
+ * on a machine. e.g.
+ *
+ * stap iotime.stp -c 'firefox'
+ *
+ * Output format is:
+ * timestamp pid (executabable) info_type path ...
+ *
+ * 200283135 2573 (cupsd) access /etc/printcap read: 0 write: 7063
+ * 200283143 2573 (cupsd) iotime /etc/printcap time: 69
+ *
+ */
+global start
+global time_io
+function timestamp:long() { return gettimeofday_us() - start }
+function proc:string() { return sprintf("%d (%s)", pid(), execname()) }
+probe begin { start = gettimeofday_us() }
+global filehandles, filereadsm, filereadsmc,filewritesm, filewritesmc
+global filereadmed, filewritemedc, filewritelg, filewritelgc, filewritemed, filereadmedc, filereadlg, filereadlgc
+probe syscall.open.return {
+ filename = user_string($filename)
+ if ($return != -1) {
+ filehandles[pid(), $return] = filename
+ } else {
+ printf("%d %s access %s fail\n", timestamp(), proc(), filename)
+ }
+}
+probe syscall.read.return {
+ p = pid()
+ fd = @entry($fd)
+ bytes = $return
+ time = gettimeofday_us() - @entry(gettimeofday_us())
+ if ( bytes <= 8192 ) {
+   filereadsm[p, fd] += bytes
+   filereadsmc[p, fd] += 1
+ }
+ else if (bytes > 8192 && bytes <= 131072) {
+
+   filereadmed[p, fd] += bytes
+   filereadmedc[p, fd] += 1
+ }
+ else if (bytes > 131072 ) {
+   filereadlg[p, fd] += bytes
+   filereadlgc[p, fd] += 1
+ }
+ time_io[p, fd] <<< time
+ printf("%d %s (%d %d) bytes\n", bytes,  filehandles[p, fd], p, fd)
+}
+probe syscall.write.return {
+ p = pid()
+ fd = @entry($fd)
+ bytes = $return
+ time = gettimeofday_us() - @entry(gettimeofday_us())
+ if ( bytes <= 131072) {
+   filewritesm[p, fd] += bytes
+   filewritesmc[p, fd] += 1
+ }
+ else if (bytes > 8192 && bytes <= 131072) {
+
+   filewritemed[p, fd] += bytes
+   filewritemedc[p, fd] += 1
+ }
+ else if (bytes > 8192) {
+   filewritelg[p, fd] += bytes
+   filewritelgc[p, fd] += 1
+ }
+ time_io[p, fd] <<< time
+
+ printf("%d %s (%d %d) bytes\n", bytes,  filehandles[p, fd], p, fd)
+}
+probe syscall.close {
+ fd = $fd
+ if ([pid(), fd] in filehandles) {
+ printf("%d %s access %s readsbyte %d, writesbytes: %d, reads: %d, writes: %d |  readmbyte %d, writembytes: %d, readm: %d, writem: %d |  readlbyte %d, writelbytes: %d, readl: %d, writel: %d \n",
+ timestamp(), proc(), filehandles[pid(), fd ],
+ filereadsm[pid(), fd], filewritesm[pid(), fd],
+ filereadsmc[pid(), fd], filewritesmc[pid(), fd],
+ filereadmed[pid(), fd], filewritemed[pid(), fd],
+ filereadmedc[pid(), fd], filewritemedc[pid(), fd],
+ filereadlg[pid(), fd], filewritelg[pid(), fd],
+ filereadlgc[pid(), fd], filewritelgc[pid(), fd]
+ )
+ if (@count(time_io[pid(), fd]))
+ printf("%d %s iotime %s time: %d (%d %d)\n", timestamp(), proc(),
+ filehandles[pid(), fd], @sum(time_io[pid(), fd]), pid(), fd)
+ }
+ delete filereadsm[pid(), fd]
+ delete filereadsmc[pid(), fd]
+ delete filereadmed[pid(), fd]
+ delete filereadmedc[pid(), fd]
+ delete filereadlg[pid(), fd]
+ delete filereadlgc[pid(), fd]
+ delete filewritesm[pid(), fd]
+ delete filewritesmc[pid(), fd]
+ delete filewritemed[pid(), fd]
+ delete filewritemedc[pid(), fd]
+ delete filewritelg[pid(), fd]
+ delete filewritelgc[pid(), fd]
+ delete filehandles[pid(), fd]
+ delete time_io[pid(),fd]
+}
+
